@@ -14,6 +14,8 @@ npm run dev
 
 The API runs on `http://localhost:3000` by default.
 
+If `.env` / `DATABASE_URL` is not present, the dev server uses the built-in in-memory demo dataset so frontend integration can continue without local PostgreSQL. To use PostgreSQL, create `.env`, start Postgres, then run `npm run db:migrate` and `npm run db:seed`.
+
 ## Demo Users
 
 All seeded users use password `password`.
@@ -34,7 +36,9 @@ Authorization: Bearer <accessToken>
 - `POST /api/v1/auth/login`
 - `POST /api/v1/auth/refresh`
 - `GET /api/v1/me`
+- `GET /api/v1/bootstrap`
 - `GET /api/v1/users/team`
+- `GET /api/v1/team-members`
 - `POST /api/v1/users`
 - `PATCH /api/v1/users/:userId/role`
 - `GET /api/v1/clients`

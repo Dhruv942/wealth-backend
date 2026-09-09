@@ -1,0 +1,393 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  RM
+  MANAGER
+  OPS
+  ADMIN
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum AllocationType {
+  TARGET
+  CURRENT
+}
+
+enum TaskPriority {
+  Critical
+  Urgent
+  Low
+  Medium
+  High
+}
+
+enum TaskStatus {
+  pending_rm
+  in_progress
+  pending_ops
+  completed
+  blocked
+}
+
+enum SlaStatus {
+  on_track
+  near_breach
+  urgent
+  breached
+  completed
+}
+
+enum CallNoteStatus {
+  raw
+  synthesized
+  transcribed
+}
+
+enum ReviewStatus {
+  draft
+  confirmed
+}
+
+enum GeneratedTaskStatus {
+  suggested
+  dispatched
+}
+
+enum SyncStatus {
+  pending
+  success
+  failed
+}
+
+enum HouseViewStatus {
+  draft
+  approved
+  archived
+}
+
+model Tenant {
+  id        String       @id
+  name      String
+  status    TenantStatus
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  users      User[]
+  clients    Client[]
+  tasks      Task[]
+  callNotes  CallNote[]
+  auditLogs  AuditLog[]
+  houseViews HouseView[]
+
+  @@map("tenants")
+}
+
+model User {
+  id           String     @id
+  tenantId     String     @map("tenant_id")
+  name         String
+  email        String
+  phone        String?
+  role         Role
+  status       UserStatus
+  passwordHash String     @map("password_hash")
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, email])
+  @@map("users")
+}
+
+model TeamMembership {
+  id            String @id
+  tenantId      String @map("tenant_id")
+  managerUserId String @map("manager_user_id")
+  memberUserId  String @map("member_user_id")
+
+  @@unique([tenantId, managerUserId, memberUserId])
+  @@map("team_memberships")
+}
+
+model Client {
+  id             String   @id
+  tenantId       String   @map("tenant_id")
+  name           String
+  firmOrFamily   String   @map("firm_or_family")
+  tier           String
+  city           String
+  phone          String
+  assignedRmId   String   @map("assigned_rm_id")
+  riskCategory   String   @map("risk_category")
+  kycStatus      String   @map("kyc_status")
+  aumNumeric     Float    @map("aum_numeric")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, assignedRmId])
+  @@map("clients")
+}
+
+model ClientContextNote {
+  id        String   @id
+  clientId  String   @map("client_id")
+  note      String
+  source    String
+  updatedAt DateTime @map("updated_at")
+
+  @@map("client_context_notes")
+}
+
+model ClientRelationshipMoment {
+  id       String   @id
+  clientId String   @map("client_id")
+  date     DateTime
+  label    String
+
+  @@map("client_relationship_moments")
+}
+
+model PortfolioAllocation {
+  id            String         @id
+  clientId      String         @map("client_id")
+  equityPct     Float          @map("equity_pct")
+  debtPct       Float          @map("debt_pct")
+  alternatesPct Float          @map("alternates_pct")
+  allocationType AllocationType @map("allocation_type")
+
+  @@unique([clientId, allocationType])
+  @@map("portfolio_allocations")
+}
+
+model PortfolioHolding {
+  id            String @id
+  clientId      String @map("client_id")
+  name          String
+  assetType     String @map("asset_type")
+  valueNumeric  Float  @map("value_numeric")
+  valueDisplay  String @map("value_display")
+  returnDisplay String @map("return_display")
+  sourceSystem  String @map("source_system")
+
+  @@map("portfolio_holdings")
+}
+
+model ClientOpportunity {
+  id            String @id
+  clientId      String @map("client_id")
+  type          String
+  title         String
+  description   String
+  severity      String
+  amountNumeric Float  @map("amount_numeric")
+  status        String
+
+  @@map("client_opportunities")
+}
+
+model Task {
+  id               String       @id
+  tenantId         String       @map("tenant_id")
+  clientId         String       @map("client_id")
+  title            String
+  details          String
+  category         String
+  priority         TaskPriority
+  status           TaskStatus
+  assignedToUserId String       @map("assigned_to_user_id")
+  assignedToName   String       @map("assigned_to_name")
+  slaDueAt         DateTime     @map("sla_due_at")
+  slaStatus        SlaStatus    @map("sla_status")
+  source           String
+  createdByUserId  String       @map("created_by_user_id")
+  idempotencyKey   String?      @map("idempotency_key")
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, clientId])
+  @@index([tenantId, assignedToUserId])
+  @@map("tasks")
+}
+
+model TaskStatusHistory {
+  id              String     @id
+  taskId          String     @map("task_id")
+  oldStatus       TaskStatus @map("old_status")
+  newStatus       TaskStatus @map("new_status")
+  changedByUserId String     @map("changed_by_user_id")
+  changedAt       DateTime   @map("changed_at")
+
+  @@map("task_status_history")
+}
+
+model TaskAssignmentHistory {
+  id              String   @id
+  taskId          String   @map("task_id")
+  oldAssigneeId   String   @map("old_assignee_id")
+  newAssigneeId   String   @map("new_assignee_id")
+  changedByUserId String   @map("changed_by_user_id")
+  changedAt       DateTime @map("changed_at")
+
+  @@map("task_assignments_history")
+}
+
+model CallNote {
+  id          String         @id
+  tenantId    String         @map("tenant_id")
+  clientId    String         @map("client_id")
+  rmUserId    String         @map("rm_user_id")
+  rawText     String         @map("raw_text")
+  audioFileId String?        @map("audio_file_id")
+  status      CallNoteStatus
+  createdAt   DateTime       @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@map("call_notes")
+}
+
+model CrmDraft {
+  id                  String       @id
+  callNoteId          String       @map("call_note_id")
+  tenantId            String       @map("tenant_id")
+  clientId            String       @map("client_id")
+  summary             String
+  sentiment           String
+  suitabilityGuardrail String      @map("suitability_guardrail")
+  crmStageUpdate      String       @map("crm_stage_update")
+  reviewStatus        ReviewStatus @map("review_status")
+  reviewedByUserId    String?      @map("reviewed_by_user_id")
+  reviewedAt          DateTime?    @map("reviewed_at")
+
+  @@index([tenantId, clientId])
+  @@map("crm_drafts")
+}
+
+model CrmLiquiditySignal {
+  id            String    @id
+  crmDraftId    String    @map("crm_draft_id")
+  amountNumeric Float?    @map("amount_numeric")
+  amountDisplay String    @map("amount_display")
+  asset         String
+  status        String
+  expectedDate  DateTime? @map("expected_date")
+
+  @@map("crm_liquidity_signals")
+}
+
+model CrmGeneratedTask {
+  id               String              @id
+  crmDraftId        String              @map("crm_draft_id")
+  taskId            String?             @map("task_id")
+  title             String
+  details           String
+  category          String
+  priority          TaskPriority
+  assignedToUserId  String              @map("assigned_to_user_id")
+  status            GeneratedTaskStatus
+  idempotencyKey    String?             @map("idempotency_key")
+
+  @@map("crm_generated_tasks")
+}
+
+model CrmSyncRecord {
+  id               String     @id
+  crmDraftId        String     @map("crm_draft_id")
+  externalCrm       String     @map("external_crm")
+  externalRecordId  String?    @map("external_record_id")
+  syncStatus        SyncStatus @map("sync_status")
+  errorMessage      String?    @map("error_message")
+  syncedAt          DateTime   @map("synced_at")
+
+  @@map("crm_sync_records")
+}
+
+model ClientCommDraft {
+  id               String   @id
+  crmDraftId        String   @map("crm_draft_id")
+  channel           String
+  subject           String?
+  body              String
+  copyCount         Int      @default(0) @map("copy_count")
+  openedExternalAt  DateTime? @map("opened_external_at")
+
+  @@map("client_comm_drafts")
+}
+
+model AuditLog {
+  id               String   @id
+  tenantId         String   @map("tenant_id")
+  actorUserId      String   @map("actor_user_id")
+  event            String
+  clientId         String?  @map("client_id")
+  taskId           String?  @map("task_id")
+  crmDraftId       String?  @map("crm_draft_id")
+  detail           String
+  complianceStatus String   @map("compliance_status")
+  metadataJson     Json     @map("metadata_json")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, createdAt])
+  @@map("audit_logs")
+}
+
+model SuitabilityCheck {
+  id                    String   @id
+  clientId              String   @map("client_id")
+  crmDraftId             String   @map("crm_draft_id")
+  riskCategory           String   @map("risk_category")
+  recommendationSummary  String   @map("recommendation_summary")
+  result                 String
+  flagsJson              Json     @map("flags_json")
+  checkedAt              DateTime @map("checked_at")
+
+  @@map("suitability_checks")
+}
+
+model HouseView {
+  id              String          @id
+  tenantId        String          @map("tenant_id")
+  title           String
+  summary         String
+  tags            String[]
+  approvedBy      String?         @map("approved_by")
+  lastReviewedAt  DateTime?       @map("last_reviewed_at")
+  status          HouseViewStatus
+  version         Int
+  createdAt       DateTime        @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@map("house_views")
+}
+
+model HouseViewVersion {
+  id           String   @id
+  houseViewId  String   @map("house_view_id")
+  summary      String
+  approvedBy   String   @map("approved_by")
+  version      Int
+  effectiveAt  DateTime @map("effective_at")
+
+  @@map("house_view_versions")
+}
