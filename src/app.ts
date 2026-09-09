@@ -76,7 +76,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   const app = Fastify({ logger: true });
   const repo = options.repository ?? new InMemoryRepository();
 
-  await app.register(cors, { origin: true });
+  await app.register(cors, { origin: true, credentials: true });
   await app.register(sensible);
   await app.register(jwt, { secret: options.jwtSecret ?? process.env.JWT_SECRET ?? "dev-secret-change-me" });
   await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
