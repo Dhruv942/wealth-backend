@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { buildSeedData } from "../src/seed-data";
 

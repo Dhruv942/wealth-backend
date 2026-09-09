@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { buildApp } from "./app";
 import { InMemoryRepository } from "./in-memory-repository";
 import { PrismaRepository } from "./prisma-repository";
