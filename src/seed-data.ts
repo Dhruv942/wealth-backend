@@ -1,5 +1,5 @@
 import bcrypt from "bcryptjs";
-import type { DataStore } from "./domain";
+import type { DataStore } from "./domain.js";
 
 const now = "2026-09-09T06:00:00.000Z";
 

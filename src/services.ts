@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
-import type { AuthUser, AuditLog, CrmDraft, SlaStatus, Task, TaskPriority, TaskStatus } from "./domain";
-import type { Repository } from "./repository";
+import type { AuthUser, AuditLog, CrmDraft, SlaStatus, Task, TaskPriority, TaskStatus } from "./domain.js";
+import type { Repository } from "./repository.js";
 import {
   canCreateCallNote,
   canExportAudit,
@@ -12,7 +12,7 @@ import {
   permissionsFor,
   publicUser,
   visibleRmIds,
-} from "./authz";
+} from "./authz.js";
 
 function id(prefix: string) {
   return `${prefix}_${crypto.randomUUID()}`;

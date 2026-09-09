@@ -13,9 +13,9 @@ import type {
   TaskAssignmentHistory,
   TaskStatusHistory,
   User,
-} from "./domain";
-import type { Repository } from "./repository";
-import { buildSeedData } from "./seed-data";
+} from "./domain.js";
+import type { Repository } from "./repository.js";
+import { buildSeedData } from "./seed-data.js";
 
 export class InMemoryRepository implements Repository {
   private data: DataStore;

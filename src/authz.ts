@@ -1,5 +1,5 @@
-import type { AuthUser, Client, Role, Task, User } from "./domain";
-import type { Repository } from "./repository";
+import type { AuthUser, Client, Role, Task, User } from "./domain.js";
+import type { Repository } from "./repository.js";
 
 export function publicUser(user: User) {
   return {

@@ -1,8 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import bcrypt from "bcryptjs";
-import type { AuthUser, User } from "./domain";
-import type { Repository } from "./repository";
-import { publicUser } from "./authz";
+import type { AuthUser, User } from "./domain.js";
+import type { Repository } from "./repository.js";
+import { publicUser } from "./authz.js";
 
 declare module "fastify" {
   interface FastifyRequest {

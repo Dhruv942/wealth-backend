@@ -13,8 +13,8 @@ import type {
   TaskAssignmentHistory,
   TaskStatusHistory,
   User,
-} from "./domain";
-import type { Repository } from "./repository";
+} from "./domain.js";
+import type { Repository } from "./repository.js";
 
 const prisma = new PrismaClient();
 

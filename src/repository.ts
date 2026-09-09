@@ -21,7 +21,7 @@ import type {
   TeamMembership,
   Tenant,
   User,
-} from "./domain";
+} from "./domain.js";
 
 export interface Repository {
   findUserByEmail(email: string): Promise<User | null>;

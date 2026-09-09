@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { Prisma, PrismaClient } from "@prisma/client";
-import { buildSeedData } from "../src/seed-data";
+import { buildSeedData } from "../src/seed-data.js";
 
 const prisma = new PrismaClient();
 const data = buildSeedData();

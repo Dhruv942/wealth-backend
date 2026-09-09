@@ -4,10 +4,10 @@ import jwt from "@fastify/jwt";
 import rateLimit from "@fastify/rate-limit";
 import sensible from "@fastify/sensible";
 import { z } from "zod";
-import { authenticate, buildTokenResponse, loginUser } from "./auth";
-import { demoCallScenarios, firmMetrics, playbookLibrary } from "./bootstrap-data";
-import { InMemoryRepository } from "./in-memory-repository";
-import type { Repository } from "./repository";
+import { authenticate, buildTokenResponse, loginUser } from "./auth.js";
+import { demoCallScenarios, firmMetrics, playbookLibrary } from "./bootstrap-data.js";
+import { InMemoryRepository } from "./in-memory-repository.js";
+import type { Repository } from "./repository.js";
 import {
   assignTask,
   branchSummary,
@@ -34,7 +34,7 @@ import {
   updateTaskStatus,
   updateUserRole,
   appendAuditLog,
-} from "./services";
+} from "./services.js";
 
 export interface BuildAppOptions {
   repository?: Repository;
