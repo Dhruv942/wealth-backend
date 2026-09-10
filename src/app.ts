@@ -18,6 +18,7 @@ import {
   createUser,
   dispatchCrmTasks,
   exportAuditCsv,
+  generateCopilotAdvice,
   getClientDossier,
   getClientPortfolio,
   getCopilotAlerts,
@@ -64,6 +65,10 @@ const taskSchema = z.object({
 const statusSchema = z.object({ status: z.enum(["pending_rm", "in_progress", "pending_ops", "completed", "blocked"]) });
 const assignSchema = z.object({ assignedToUserId: z.string() });
 const callNoteSchema = z.object({ clientId: z.string(), rawText: z.string().min(1), source: z.string().optional() });
+const copilotAdviceSchema = z.object({
+  query: z.string().min(1),
+  contextMode: z.enum(["pre_call", "objection_defense", "portfolio_review", "next_best_action"]).default("pre_call"),
+});
 const crmDraftPatchSchema = z.object({
   summary: z.string().optional(),
   sentiment: z.string().optional(),
@@ -127,18 +132,32 @@ export async function buildApp(options: BuildAppOptions = {}) {
       listHouseViews(repo, request.authUser, {}),
       listAuditLogs(repo, request.authUser, {}),
     ]);
+    const teamBookOverrides: Record<string, { clientsCount: number; totalAUM: string; disclosedDossiers?: number; bookDisclosure?: string }> = {
+      "rm-1": {
+        clientsCount: 42,
+        totalAUM: "₹85.0 Cr",
+        disclosedDossiers: 3,
+        bookDisclosure: "3 full dossiers visible in this demo; 39 additional client records are summarized only.",
+      },
+    };
     return {
-      teamMembers: teamMembers.map((member) => ({
-        id: member.id,
-        name: member.name,
-        role: member.role === "RM" ? "Relationship Manager" : member.role === "MANAGER" ? "Cluster Head & Managing Director" : member.role === "OPS" ? "Back-Office Processing Desk" : "Admin",
-        level: member.role === "MANAGER" ? "Manager" : member.role === "OPS" ? "Operations" : member.role,
-        clientsCount: clients.filter((client) => client.assignedRmId === member.id).length,
-        totalAUM: `₹${(clients.filter((client) => client.assignedRmId === member.id).reduce((sum, client) => sum + client.aumNumeric, 0) / 10000000).toFixed(1)} Cr`,
-        openTasksCount: tasks.filter((task) => task.assignedToUserId === member.id && task.status !== "completed").length,
-        slaScore: "92%",
-        avatar: member.name.split(" ").map((part) => part[0]).join("").slice(0, 3).toUpperCase(),
-      })),
+      teamMembers: teamMembers.map((member) => {
+        const memberClients = clients.filter((client) => client.assignedRmId === member.id);
+        const override = teamBookOverrides[member.id];
+        return {
+          id: member.id,
+          name: member.name,
+          role: member.role === "RM" ? "Relationship Manager" : member.role === "MANAGER" ? "Cluster Head & Managing Director" : member.role === "OPS" ? "Back-Office Processing Desk" : "Admin",
+          level: member.role === "MANAGER" ? "Manager" : member.role === "OPS" ? "Operations" : member.role,
+          clientsCount: override?.clientsCount ?? memberClients.length,
+          visibleDossierCount: memberClients.length,
+          totalAUM: override?.totalAUM ?? `₹${(memberClients.reduce((sum, client) => sum + client.aumNumeric, 0) / 10000000).toFixed(1)} Cr`,
+          bookDisclosure: override?.bookDisclosure ?? null,
+          openTasksCount: tasks.filter((task) => task.assignedToUserId === member.id && task.status !== "completed").length,
+          slaScore: "92%",
+          avatar: member.name.split(" ").map((part) => part[0]).join("").slice(0, 3).toUpperCase(),
+        };
+      }),
       clientProfiles: clients.map((client) => ({
         ...client,
         assignedRMId: client.assignedRmId,
@@ -176,6 +195,10 @@ export async function buildApp(options: BuildAppOptions = {}) {
   app.get("/api/v1/clients/:clientId/copilot-alerts", async (request) => {
     const params = z.object({ clientId: z.string() }).parse(request.params);
     return getCopilotAlerts(repo, request.authUser, params.clientId);
+  });
+  app.post("/api/v1/clients/:clientId/copilot-advice", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (request) => {
+    const params = z.object({ clientId: z.string() }).parse(request.params);
+    return generateCopilotAdvice(repo, request.authUser, params.clientId, copilotAdviceSchema.parse(request.body));
   });
   app.patch("/api/v1/clients/:clientId/assigned-rm", async (request) => {
     const params = z.object({ clientId: z.string() }).parse(request.params);

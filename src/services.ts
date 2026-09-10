@@ -13,7 +13,7 @@ import {
   publicUser,
   visibleRmIds,
 } from "./authz.js";
-import { buildGeneratedTaskRows, buildLiquiditySignalRows, hasGeminiConfig, synthesizeWithGemini } from "./gemini-synthesizer.js";
+import { buildGeneratedTaskRows, buildLiquiditySignalRows, generateCopilotAdviceWithGemini, hasGeminiConfig, synthesizeWithDeterministicBackend, synthesizeWithGemini } from "./gemini-synthesizer.js";
 
 function id(prefix: string) {
   return `${prefix}_${crypto.randomUUID()}`;
@@ -50,7 +50,7 @@ export async function listTeamUsers(repo: Repository, user: AuthUser) {
   if (user.role === "RM") return users.filter((item) => item.id === user.id).map(publicUser);
   if (user.role === "MANAGER") {
     const rmIds = await visibleRmIds(repo, user);
-    return users.filter((item) => item.id === user.id || rmIds.includes(item.id)).map(publicUser);
+    return users.filter((item) => item.id === user.id || rmIds.includes(item.id) || item.role === "OPS").map(publicUser);
   }
   return users.filter((item) => item.role === "OPS" || item.role === "RM").map(publicUser);
 }
@@ -145,6 +145,77 @@ export async function getCopilotAlerts(repo: Repository, user: AuthUser, clientI
   ];
 }
 
+export async function generateCopilotAdvice(repo: Repository, user: AuthUser, clientId: string, input: { query: string; contextMode: "pre_call" | "objection_defense" | "portfolio_review" | "next_best_action" }) {
+  const client = await repo.getClient(user.tenantId, clientId);
+  if (!client || !(await canSeeClient(repo, user, client))) throw Object.assign(new Error("Client not found"), { statusCode: 404 });
+  if (!hasGeminiConfig()) {
+    throw Object.assign(new Error("GEMINI_API_KEY is required for real AI co-pilot advice"), { statusCode: 503 });
+  }
+
+  const [users, contextNotes, relationshipMoments, allocations, holdings, opportunities, openTasks, houseViews] = await Promise.all([
+    repo.listUsers(user.tenantId),
+    repo.listClientContextNotes(clientId),
+    repo.listClientRelationshipMoments(clientId),
+    repo.listPortfolioAllocations(clientId),
+    repo.listPortfolioHoldings(clientId),
+    repo.listClientOpportunities(clientId),
+    listTasks(repo, user, { clientId }),
+    listHouseViews(repo, user, {}),
+  ]);
+  const targetAllocation = allocations.find((item) => item.allocationType === "TARGET") ?? null;
+  const currentAllocation = allocations.find((item) => item.allocationType === "CURRENT") ?? null;
+  const advice = await generateCopilotAdviceWithGemini({
+    client,
+    query: input.query,
+    contextMode: input.contextMode,
+    users,
+    contextNotes,
+    relationshipMoments,
+    targetAllocation,
+    currentAllocation,
+    holdings,
+    opportunities,
+    openTasks,
+    houseViews,
+  });
+  const opsUser = users.find((item) => item.role === "OPS");
+  const advisorUser = users.find((item) => item.id === client.assignedRmId) ?? users.find((item) => item.id === user.id);
+  const recommendedNextTasks = advice.recommendedNextTasks.map((task) => ({
+    ...task,
+    assignedToUserId: task.assigneeRole === "OPS" ? (opsUser?.id ?? user.id) : (advisorUser?.id ?? user.id),
+    assignedToName: task.assigneeRole === "OPS" ? (opsUser?.name ?? user.name) : (advisorUser?.name ?? user.name),
+    status: task.assigneeRole === "OPS" ? "pending_ops" : "pending_rm",
+  }));
+
+  await appendAuditLog(repo, user, {
+    event: "copilot.advice_generated",
+    clientId,
+    taskId: null,
+    crmDraftId: null,
+    detail: `Generated ${input.contextMode} co-pilot advice with Gemini`,
+    complianceStatus: "review_required",
+    metadataJson: { provider: "gemini", recommendedTaskCount: recommendedNextTasks.length },
+  });
+
+  return {
+    clientId,
+    clientName: client.name,
+    contextMode: input.contextMode,
+    generatedAt: now(),
+    provider: "gemini",
+    ...advice,
+    recommendedNextTasks,
+    dataSnapshot: {
+      holdingsCount: holdings.length,
+      opportunitiesCount: opportunities.length,
+      openTasksCount: openTasks.length,
+      houseViewsCount: houseViews.length,
+      targetAllocation,
+      currentAllocation,
+    },
+  };
+}
+
 export async function reassignClient(repo: Repository, user: AuthUser, clientId: string, assignedRmId: string) {
   if (!["MANAGER", "ADMIN"].includes(user.role)) throw Object.assign(new Error("Forbidden"), { statusCode: 403 });
   const client = await repo.getClient(user.tenantId, clientId);
@@ -187,6 +258,7 @@ export async function createTask(repo: Repository, user: AuthUser, input: { clie
   if (!client || !(await canSeeClient(repo, user, client))) throw Object.assign(new Error("Client not found"), { statusCode: 404 });
   const assignee = await repo.findUserById(input.assignedToUserId);
   if (!assignee || assignee.tenantId !== user.tenantId) throw Object.assign(new Error("Assignee not found"), { statusCode: 404 });
+  const initialStatus: TaskStatus = assignee.role === "OPS" ? "pending_ops" : "pending_rm";
   const task: Task = {
     id: id("task"),
     tenantId: user.tenantId,
@@ -195,11 +267,11 @@ export async function createTask(repo: Repository, user: AuthUser, input: { clie
     details: input.details,
     category: input.category,
     priority: input.priority,
-    status: input.category.toLowerCase().includes("operations") || input.category.toLowerCase().includes("compliance") ? "pending_ops" : "pending_rm",
+    status: initialStatus,
     assignedToUserId: assignee.id,
     assignedToName: assignee.name,
     slaDueAt: input.slaDueAt,
-    slaStatus: calculateSlaStatus(input.category.toLowerCase().includes("operations") || input.category.toLowerCase().includes("compliance") ? "pending_ops" : "pending_rm", input.slaDueAt),
+    slaStatus: calculateSlaStatus(initialStatus, input.slaDueAt),
     source: input.source,
     createdByUserId: user.id,
     idempotencyKey: input.idempotencyKey ?? null,
@@ -223,8 +295,7 @@ export async function updateTaskStatus(repo: Repository, user: AuthUser, taskId:
   const task = await repo.getTask(user.tenantId, taskId);
   if (!task || !(await canSeeTask(repo, user, task))) throw Object.assign(new Error("Task not found"), { statusCode: 404 });
   if (user.role === "RM" && task.assignedToUserId !== user.id) {
-    const client = await repo.getClient(user.tenantId, task.clientId);
-    if (!client || client.assignedRmId !== user.id) throw Object.assign(new Error("Forbidden"), { statusCode: 403 });
+    throw Object.assign(new Error("RM can only update tasks assigned to them"), { statusCode: 403 });
   }
   const updated = await repo.updateTaskStatus(user.tenantId, taskId, status, calculateSlaStatus(status, task.slaDueAt));
   if (!updated) throw Object.assign(new Error("Task not found"), { statusCode: 404 });
@@ -247,24 +318,37 @@ export async function assignTask(repo: Repository, user: AuthUser, taskId: strin
   const assignee = await repo.findUserById(assignedToUserId);
   if (!assignee || assignee.tenantId !== user.tenantId) throw Object.assign(new Error("Assignee not found"), { statusCode: 404 });
   if (user.role === "RM" && assignee.role !== "OPS") throw Object.assign(new Error("RM can only hand off to Ops"), { statusCode: 403 });
-  if (user.role === "OPS" && assignee.role !== "OPS") throw Object.assign(new Error("Ops can only reassign within Ops"), { statusCode: 403 });
+  if (user.role === "OPS" && assignee.role !== "OPS") {
+    const client = await repo.getClient(user.tenantId, task.clientId);
+    if (!client || assignee.role !== "RM" || assignee.id !== client.assignedRmId) {
+      throw Object.assign(new Error("Ops can only reassign to Ops or the client's assigned RM"), { statusCode: 403 });
+    }
+  }
   if (user.role === "MANAGER") {
     const rmIds = await visibleRmIds(repo, user);
     if (!["OPS", "ADMIN"].includes(assignee.role) && !rmIds.includes(assignee.id)) throw Object.assign(new Error("Forbidden"), { statusCode: 403 });
   }
+  const previousAssigneeId = task.assignedToUserId;
+  const previousAssigneeName = task.assignedToName;
+  const previousStatus = task.status;
+  const nextStatus: TaskStatus = assignee.role === "OPS" ? "pending_ops" : "pending_rm";
   const updated = await repo.updateTaskAssignee(user.tenantId, taskId, assignee.id, assignee.name);
   if (!updated) throw Object.assign(new Error("Task not found"), { statusCode: 404 });
-  await repo.addTaskAssignmentHistory({ id: id("tah"), taskId, oldAssigneeId: task.assignedToUserId, newAssigneeId: assignee.id, changedByUserId: user.id, changedAt: now() });
+  const statusUpdated = await repo.updateTaskStatus(user.tenantId, taskId, nextStatus, calculateSlaStatus(nextStatus, task.slaDueAt));
+  await repo.addTaskAssignmentHistory({ id: id("tah"), taskId, oldAssigneeId: previousAssigneeId, newAssigneeId: assignee.id, changedByUserId: user.id, changedAt: now() });
+  if (previousStatus !== nextStatus) {
+    await repo.addTaskStatusHistory({ id: id("tsh"), taskId, oldStatus: previousStatus, newStatus: nextStatus, changedByUserId: user.id, changedAt: now() });
+  }
   await appendAuditLog(repo, user, {
-    event: "task.assigned",
+    event: "task.reassigned",
     clientId: task.clientId,
     taskId,
     crmDraftId: null,
-    detail: `Task reassigned from ${task.assignedToName} to ${assignee.name}`,
+    detail: `Task reassigned from ${previousAssigneeName} to ${assignee.name}`,
     complianceStatus: "ok",
-    metadataJson: { oldAssigneeId: task.assignedToUserId, newAssigneeId: assignee.id },
+    metadataJson: { oldAssigneeId: previousAssigneeId, newAssigneeId: assignee.id, newStatus: nextStatus },
   });
-  return updated;
+  return statusUpdated ?? updated;
 }
 
 export async function createCallNote(repo: Repository, user: AuthUser, input: { clientId: string; rawText: string }) {
@@ -282,10 +366,19 @@ export async function synthesizeCallNote(repo: Repository, user: AuthUser, callN
   const client = await repo.getClient(user.tenantId, callNote.clientId);
   if (!client || !(await canSeeClient(repo, user, client))) throw Object.assign(new Error("Call note not found"), { statusCode: 404 });
   const users = await repo.listUsers(user.tenantId);
-  if (!hasGeminiConfig()) {
-    throw Object.assign(new Error("GEMINI_API_KEY is required for real AI meeting synthesis"), { statusCode: 503 });
+  let synthesisProvider = "backend_deterministic";
+  let synthesis;
+  if (hasGeminiConfig()) {
+    try {
+      synthesis = await synthesizeWithGemini({ client, rawText: callNote.rawText, users });
+      synthesisProvider = "gemini";
+    } catch {
+      synthesis = synthesizeWithDeterministicBackend({ client, rawText: callNote.rawText });
+      synthesisProvider = "backend_deterministic_after_gemini_error";
+    }
+  } else {
+    synthesis = synthesizeWithDeterministicBackend({ client, rawText: callNote.rawText });
   }
-  const synthesis = await synthesizeWithGemini({ client, rawText: callNote.rawText, users });
   const draft: CrmDraft = {
     id: id("draft"),
     tenantId: user.tenantId,
@@ -311,7 +404,7 @@ export async function synthesizeCallNote(repo: Repository, user: AuthUser, callN
   const whatsapp = await repo.createClientCommDraft({ id: id("comm"), crmDraftId: draft.id, channel: "whatsapp", subject: null, body: synthesis.whatsappDraft, copyCount: 0, openedExternalAt: null });
   const email = await repo.createClientCommDraft({ id: id("comm"), crmDraftId: draft.id, channel: "email", subject: synthesis.emailSubject, body: synthesis.emailBody, copyCount: 0, openedExternalAt: null });
   await repo.updateCallNoteStatus(user.tenantId, callNoteId, "synthesized");
-  await appendAuditLog(repo, user, { event: "callnote.synthesized", clientId: callNote.clientId, taskId: null, crmDraftId: draft.id, detail: "Synthesized CRM draft from call note with Gemini", complianceStatus: "review_required", metadataJson: { generatedTaskCount: generated.length, provider: "gemini" } });
+  await appendAuditLog(repo, user, { event: "callnote.synthesized", clientId: callNote.clientId, taskId: null, crmDraftId: draft.id, detail: `Synthesized CRM draft from call note with ${synthesisProvider}`, complianceStatus: "review_required", metadataJson: { generatedTaskCount: generated.length, provider: synthesisProvider } });
   return {
     crmDraftId: draft.id,
     reviewStatus: draft.reviewStatus,
