@@ -21,6 +21,7 @@ import {
   getClientDossier,
   getClientPortfolio,
   getCopilotAlerts,
+  getCrmDraftDetail,
   getMe,
   listAuditLogs,
   listClients,
@@ -55,7 +56,7 @@ const taskSchema = z.object({
   title: z.string().min(1),
   details: z.string().min(1),
   category: z.string().min(1),
-  priority: z.enum(["Low", "Medium", "High"]),
+  priority: z.enum(["Critical", "Urgent", "High", "Medium", "Low"]),
   assignedToUserId: z.string(),
   slaDueAt: z.string().datetime(),
   source: z.string().min(1),
@@ -216,6 +217,10 @@ export async function buildApp(options: BuildAppOptions = {}) {
   app.patch("/api/v1/crm-drafts/:draftId", async (request) => {
     const params = z.object({ draftId: z.string() }).parse(request.params);
     return updateCrmDraft(repo, request.authUser, params.draftId, crmDraftPatchSchema.parse(request.body));
+  });
+  app.get("/api/v1/crm-drafts/:draftId", async (request) => {
+    const params = z.object({ draftId: z.string() }).parse(request.params);
+    return getCrmDraftDetail(repo, request.authUser, params.draftId);
   });
   app.post("/api/v1/crm-drafts/:draftId/confirm", async (request) => {
     const params = z.object({ draftId: z.string() }).parse(request.params);

@@ -13,6 +13,7 @@ import {
   publicUser,
   visibleRmIds,
 } from "./authz.js";
+import { buildGeneratedTaskRows, buildLiquiditySignalRows, hasGeminiConfig, synthesizeWithGemini } from "./gemini-synthesizer.js";
 
 function id(prefix: string) {
   return `${prefix}_${crypto.randomUUID()}`;
@@ -280,40 +281,73 @@ export async function synthesizeCallNote(repo: Repository, user: AuthUser, callN
   if (!callNote) throw Object.assign(new Error("Call note not found"), { statusCode: 404 });
   const client = await repo.getClient(user.tenantId, callNote.clientId);
   if (!client || !(await canSeeClient(repo, user, client))) throw Object.assign(new Error("Call note not found"), { statusCode: 404 });
-  const amountMatch = callNote.rawText.match(/₹?\s?(\d+(?:\.\d+)?)\s?(lakh|lakhs|cr|crore)?/i);
-  const amountNumeric = amountMatch ? Number(amountMatch[1]) * (amountMatch[2]?.toLowerCase().startsWith("cr") ? 10000000 : 100000) : 2500000;
+  const users = await repo.listUsers(user.tenantId);
+  if (!hasGeminiConfig()) {
+    throw Object.assign(new Error("GEMINI_API_KEY is required for real AI meeting synthesis"), { statusCode: 503 });
+  }
+  const synthesis = await synthesizeWithGemini({ client, rawText: callNote.rawText, users });
   const draft: CrmDraft = {
     id: id("draft"),
     tenantId: user.tenantId,
     clientId: callNote.clientId,
     callNoteId,
-    summary: `Client discussion captured for ${client.name}. ${callNote.rawText.slice(0, 180)}`,
-    sentiment: callNote.rawText.toLowerCase().includes("cautious") ? "Tactically cautious" : "Constructive",
-    suitabilityGuardrail: `${client.riskCategory} mandate suitability review required before execution.`,
-    crmStageUpdate: "Stage: Liquidity Deployment",
+    summary: synthesis.summary,
+    sentiment: synthesis.sentiment,
+    suitabilityGuardrail: synthesis.suitabilityGuardrail,
+    crmStageUpdate: synthesis.crmStageUpdate,
     reviewStatus: "draft",
     reviewedByUserId: null,
     reviewedAt: null,
   };
   await repo.createCrmDraft(draft);
-  const signal = await repo.createCrmLiquiditySignal({ id: id("liq"), crmDraftId: draft.id, amountNumeric, amountDisplay: amountMatch?.[0] ?? "₹25 Lakhs", asset: "Commercial Property Advance", status: "Received / discussed", expectedDate: null });
-  const opsUser = (await repo.listUsers(user.tenantId)).find((item) => item.role === "OPS");
-  const generated = await repo.createCrmGeneratedTask({ id: id("gentask"), crmDraftId: draft.id, taskId: null, title: "Execute staged deployment", details: "Create execution workflow after RM confirmation.", category: "Operations / Execution", priority: "High", assignedToUserId: opsUser?.id ?? user.id, status: "suggested", idempotencyKey: null });
-  const whatsapp = await repo.createClientCommDraft({ id: id("comm"), crmDraftId: draft.id, channel: "whatsapp", subject: null, body: `Hi ${client.name}, sharing the agreed next steps from our call.`, copyCount: 0, openedExternalAt: null });
-  const email = await repo.createClientCommDraft({ id: id("comm"), crmDraftId: draft.id, channel: "email", subject: "Next steps from our portfolio discussion", body: `Dear ${client.name},\n\nAs discussed, we will proceed only after your confirmation and suitability checks.`, copyCount: 0, openedExternalAt: null });
+  const signals = [];
+  for (const signal of buildLiquiditySignalRows({ crmDraftId: draft.id, synthesis })) {
+    signals.push(await repo.createCrmLiquiditySignal({ id: id("liq"), ...signal }));
+  }
+  const generated = [];
+  for (const task of buildGeneratedTaskRows({ crmDraftId: draft.id, synthesis, users, fallbackUserId: user.id })) {
+    generated.push(await repo.createCrmGeneratedTask({ id: id("gentask"), taskId: null, status: "suggested", idempotencyKey: null, ...task }));
+  }
+  const whatsapp = await repo.createClientCommDraft({ id: id("comm"), crmDraftId: draft.id, channel: "whatsapp", subject: null, body: synthesis.whatsappDraft, copyCount: 0, openedExternalAt: null });
+  const email = await repo.createClientCommDraft({ id: id("comm"), crmDraftId: draft.id, channel: "email", subject: synthesis.emailSubject, body: synthesis.emailBody, copyCount: 0, openedExternalAt: null });
   await repo.updateCallNoteStatus(user.tenantId, callNoteId, "synthesized");
-  await appendAuditLog(repo, user, { event: "callnote.synthesized", clientId: callNote.clientId, taskId: null, crmDraftId: draft.id, detail: "Synthesized CRM draft from call note", complianceStatus: "review_required", metadataJson: { generatedTaskCount: 1 } });
+  await appendAuditLog(repo, user, { event: "callnote.synthesized", clientId: callNote.clientId, taskId: null, crmDraftId: draft.id, detail: "Synthesized CRM draft from call note with Gemini", complianceStatus: "review_required", metadataJson: { generatedTaskCount: generated.length, provider: "gemini" } });
   return {
     crmDraftId: draft.id,
+    reviewStatus: draft.reviewStatus,
     summary: draft.summary,
     sentiment: draft.sentiment,
-    liquiditySignals: [signal],
+    liquiditySignals: signals,
     suitabilityGuardrail: draft.suitabilityGuardrail,
-    generatedOpsTasks: [generated],
+    generatedOpsTasks: generated,
     whatsappDraft: whatsapp.body,
     emailSubject: email.subject,
     emailBody: email.body,
     crmStageUpdate: draft.crmStageUpdate,
+  };
+}
+
+export async function getCrmDraftDetail(repo: Repository, user: AuthUser, draftId: string) {
+  const draft = await visibleCrmDraft(repo, user, draftId);
+  const communications = await repo.listClientCommDrafts(draftId);
+  return {
+    crmDraftId: draft.id,
+    callNoteId: draft.callNoteId,
+    clientId: draft.clientId,
+    summary: draft.summary,
+    sentiment: draft.sentiment,
+    suitabilityGuardrail: draft.suitabilityGuardrail,
+    crmStageUpdate: draft.crmStageUpdate,
+    reviewStatus: draft.reviewStatus,
+    reviewedByUserId: draft.reviewedByUserId,
+    reviewedAt: draft.reviewedAt,
+    liquiditySignals: await repo.listCrmLiquiditySignals(draftId),
+    generatedOpsTasks: await repo.listCrmGeneratedTasks(draftId),
+    communications,
+    whatsappDraft: communications.find((item) => item.channel === "whatsapp")?.body ?? null,
+    emailSubject: communications.find((item) => item.channel === "email")?.subject ?? null,
+    emailBody: communications.find((item) => item.channel === "email")?.body ?? null,
+    syncRecords: await repo.listCrmSyncRecords(draftId),
   };
 }
 
@@ -375,6 +409,8 @@ export async function listAuditLogs(repo: Repository, user: AuthUser, query: Rec
     logs = logs.filter((log) => !log.clientId || clientIds.has(log.clientId));
   }
   if (query.clientId) logs = logs.filter((log) => log.clientId === query.clientId);
+  if (query.taskId) logs = logs.filter((log) => log.taskId === query.taskId);
+  if (query.crmDraftId) logs = logs.filter((log) => log.crmDraftId === query.crmDraftId);
   if (query.actorUserId) logs = logs.filter((log) => log.actorUserId === query.actorUserId);
   if (query.event) logs = logs.filter((log) => log.event === query.event);
   if (query.from) logs = logs.filter((log) => log.createdAt >= query.from!);

@@ -16,6 +16,17 @@ The API runs on `http://localhost:3000` by default.
 
 If `.env` / `DATABASE_URL` is not present, the dev server uses the built-in in-memory demo dataset so frontend integration can continue without local PostgreSQL. To use PostgreSQL, create `.env`, start Postgres, then run `npm run db:migrate` and `npm run db:seed`.
 
+## Gemini Meeting Synthesis
+
+Auto-CRM meeting synthesis uses the real Gemini API. Set these variables before calling `POST /api/v1/call-notes/:callNoteId/synthesize`:
+
+```bash
+GEMINI_API_KEY="your-google-ai-studio-key"
+GEMINI_MODEL="gemini-2.5-flash"
+```
+
+If `GEMINI_API_KEY` is missing, synthesis returns `503` instead of creating fake AI output.
+
 ## Demo Users
 
 All seeded users use password `password`.
@@ -54,6 +65,7 @@ Authorization: Bearer <accessToken>
 - `POST /api/v1/call-notes`
 - `POST /api/v1/call-notes/:callNoteId/synthesize`
 - `PATCH /api/v1/crm-drafts/:draftId`
+- `GET /api/v1/crm-drafts/:draftId`
 - `POST /api/v1/crm-drafts/:draftId/confirm`
 - `POST /api/v1/crm-drafts/:draftId/sync`
 - `POST /api/v1/crm-drafts/:draftId/dispatch-tasks`
@@ -71,5 +83,5 @@ Authorization: Bearer <accessToken>
 - Tenant scope is always derived from the authenticated user.
 - Write endpoints append audit records.
 - CRM sync and generated task dispatch require a confirmed CRM draft.
-- Current CRM sync and synthesis are deterministic mock adapters stored in PostgreSQL, ready to replace with real workers later.
+- CRM sync remains a mock adapter until a live CRM provider is connected. Meeting synthesis calls Gemini and stores the generated CRM draft, liquidity signals, communication drafts, and generated task candidates.
 # wealth-backend
