@@ -8,7 +8,7 @@ import {
   canSeeClient,
   canSeeTask,
   filterVisibleClients,
-  filterVisibleTasks,
+  isOpsTask,
   permissionsFor,
   publicUser,
   visibleRmIds,
@@ -234,7 +234,20 @@ export async function reassignClient(repo: Repository, user: AuthUser, clientId:
 }
 
 export async function listTasks(repo: Repository, user: AuthUser, query: Record<string, string | undefined>) {
-  let tasks = await filterVisibleTasks(repo, user, await repo.listTasks(user.tenantId));
+  let tasks = await repo.listTasks(user.tenantId);
+  if (user.role === "OPS") {
+    tasks = tasks.filter(isOpsTask);
+  } else if (user.role !== "ADMIN") {
+    const [clients, rmIds] = await Promise.all([
+      repo.listClients(user.tenantId),
+      visibleRmIds(repo, user),
+    ]);
+    const visibleClientIds = new Set(clients.filter((client) => rmIds.includes(client.assignedRmId)).map((client) => client.id));
+    tasks = tasks.filter((task) => {
+      if (!visibleClientIds.has(task.clientId)) return false;
+      return user.role !== "RM" || task.assignedToUserId === user.id || visibleClientIds.has(task.clientId);
+    });
+  }
   if (query.status) tasks = tasks.filter((task) => task.status === query.status);
   if (query.priority) tasks = tasks.filter((task) => task.priority === query.priority);
   if (query.category) tasks = tasks.filter((task) => task.category === query.category);
